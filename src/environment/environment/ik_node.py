@@ -7,8 +7,8 @@ from geometry_msgs.msg import Pose, Point, Quaternion
 from std_msgs.msg import Float64MultiArray
 import numpy as np
 
-import sys
-sys.path.append("/home/welgpu/jahnvee/ddp/octo_main_ws/src")
+# import sys
+# sys.path.append("/home/welgpu/jahnvee/ddp/octo_main_ws/src")
 
 from roarm_pick_place_controller import IK5DOF, forward_kinematics
 

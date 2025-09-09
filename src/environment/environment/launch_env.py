@@ -126,7 +126,7 @@ class IsaacSimEnvironmentNode(Node):
             self.world.step(render=True)
 
     def joint_angles_callback(self, msg):
-        """Directly set robot joint positions from ROS2 topic"""
+        """Directly set robot joint positions from ROS2 topi"""
         target_angles = np.array(msg.position)
         if len(target_angles) != len(self.joint_names):
             self.get_logger().warn(
