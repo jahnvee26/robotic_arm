@@ -22,6 +22,7 @@ setup(
         'console_scripts': [
             'launch_env = environment.launch_env:main',
             'ik_node = environment.ik_node:main',
+            'keyboard_control = environment.keyboard_control:main',
         ],
     },
 )
