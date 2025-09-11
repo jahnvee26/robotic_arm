@@ -8,7 +8,6 @@ import numpy as np
 # import sys
 # sys.path.append("/home/welgpu/jahnvee/isaac-sim/isaac-sim-standalone-5.0.0-linux-x86_64/kit/python/lib/python3.11/site-packages")
 
-
 from isaacsim import SimulationApp
 simulation_app = SimulationApp({"headless": False})
 
@@ -33,7 +32,7 @@ class IsaacSimEnvironmentNode(Node):
         # ROS2 Subscribers and Publishers
         self.joint_subscription = self.create_subscription(
             JointState,
-            'target_joint_angles',
+            '/desired_joint_angles',
             self.joint_angles_callback,
             10
         )
@@ -121,25 +120,75 @@ class IsaacSimEnvironmentNode(Node):
             
 
         self.get_logger().info("Isaac Sim environment setup complete")
+
+        position = np.array([0.2, 0.1, 0.05])  
+        #print(f"[CUBE] Creating cube at position: [{position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f}]")
+        cube = self.world.scene.add(
+            DynamicCuboid(
+                name="cube",
+                position=np.array([position[0], position[1], position[2]]),
+                prim_path="/World/Cube",
+                scale=np.array([0.05, 0.05, 0.05]),  # Very small for precise gripping
+                size=1.0,
+                color=np.array([0, 0, 1])
+            )
+        )
+
     def world_step(self):
         if simulation_app.is_running():
             self.world.step(render=True)
 
-    def joint_angles_callback(self, msg):
-        """Directly set robot joint positions from ROS2 topi"""
-        target_angles = np.array(msg.position)
-        if len(target_angles) != len(self.joint_names):
-            self.get_logger().warn(
-                f"Expected {len(self.joint_names)} joints, got {len(target_angles)}"
-            )
+    def convert_to_sim_angles(self, joint_angles):
+
+        sim_angles = np.zeros_like(joint_angles)
+        sim_angles[0] = + joint_angles[0] - np.pi/2
+        sim_angles[1] = - joint_angles[1]
+        sim_angles[2] = - joint_angles[2]
+        sim_angles[3] = - joint_angles[3]
+        sim_angles[4] =   joint_angles[4]
+
+        return sim_angles
+
+    def add_mimic_joints(self):
+        """
+        Create full 10-joint array with mimic joints from 5 real joint angles
+        """
+        full_joint_angles = np.zeros(10, dtype=float)
+        full_joint_angles[:5] = self.joint_angles
+        full_joint_angles[5] = -self.joint_angles[4]      # L4_to_L5_1_B
+        full_joint_angles[6] = self.joint_angles[4]       # L4_to_L5_2_A
+        full_joint_angles[7] = -self.joint_angles[4]      # L4_to_L5_2_B
+        full_joint_angles[8] = -self.joint_angles[4]      # L5_1_A_to_L5_3_A
+        full_joint_angles[9] = self.joint_angles[4]       # L5_1_B_to_L5_3_B (mimics joint 5)
+        return full_joint_angles
+    
+    def send_joint_angles(self):
+        # Create full 10-joint array with mimic joints
+        full_joint_angles_array = self.add_mimic_joints()
+
+        # Verify we have the right number of joints for the robot
+        if len(full_joint_angles_array) != len(self.joint_names):
+            self.get_logger().warning(f"Expected {len(self.joint_names)} total joints to be sent for action, got {len(full_joint_angles_array)}")
             return
 
-        action = ArticulationAction(joint_positions=target_angles.tolist())
+        action = ArticulationAction(joint_positions=full_joint_angles_array.tolist())
         self.robot.apply_action(action)
         self.world.step(render=True)
+        self.get_logger().info(f"Sent action to sim")
 
-        self.get_logger().info(f"Applied joint angles: {np.degrees(target_angles[:5])}")
-        
+    def joint_angles_callback(self, msg):
+        """Set robot joint positions from ROS2 topic (5 real joints + 5 mimic joints)"""
+        self.get_logger().info(f"Received joint angles message: {np.degrees(msg.position)}")
+        self.joint_angles = self.convert_to_sim_angles(np.array(msg.position))
+
+        # Expect only 5 real joint angles in degrees
+        if len(self.joint_angles) != 5:
+            self.get_logger().warning(f"Expected 5 joint angles, got {len(self.joint_angles)}")
+            return
+        self.send_joint_angles()
+
+
+
 def main(args=None):
     rclpy.init(args=args)
 

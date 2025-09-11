@@ -21,7 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'launch_env = environment.launch_env:main',
-            'ik_script = environment.ik_script:main',
+            'ik_node = environment.ik_node:main',
         ],
     },
 )
