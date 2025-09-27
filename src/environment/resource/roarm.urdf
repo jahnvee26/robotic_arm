@@ -24,7 +24,7 @@
       <geometry>
         <mesh filename="/home/welgpu/jahnvee/ddp/robotic_arm/src/environment/resource/meshes/L1.stl"/>
       </geometry>
-      <origin rpy="0 0 0" xyz="0 0 -0.062"/>
+      <origin rpy="0 0 0" xyz="0 0 -0.0595"/>
       <material name="white"/>
     </visual>
   </link>
@@ -126,7 +126,7 @@
     <limit effort="1000.0" lower="-3.14" upper="3.14" velocity="0.5"/>
     <parent link="base_link"/>
     <child link="l1_link"/>
-    <origin xyz="0 0 0.062"/>
+    <origin xyz="0 0 0.0595"/>
   </joint>
 
   <joint name="L1_to_L2" type="revolute">
@@ -136,7 +136,7 @@
     <parent link="l1_link"/>
     <child link="l2_link"/>
     <!-- Keep original position but add rotation to make vertical -->
-    <origin xyz="0 0.041051 0.0534" rpy="0.655391 0 0"/>
+    <origin xyz="0 0.041051 0.05624" rpy="0.655391 0 0"/>
   </joint>
 
   <joint name="L2_to_L3" type="revolute">

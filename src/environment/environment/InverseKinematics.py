@@ -3,7 +3,7 @@ import math
 import numpy as np
 
 class Kinematic:
-    def __init__(self, phi_resolution: float = 1.0):
+    def __init__(self):
         # Robot arm dimensions in meters (converted from your original values)
         self.a0 = 0.0595   # Base height (5.95cm)
         self.a1 = 0.06959  # Base to shoulder joint (6.959cm)
@@ -13,10 +13,6 @@ class Kinematic:
         self.a3 = 0.128    # Elbow to wrist length (12.8cm)
         self.a4 = 0.108    # Wrist to end effector length (10.8cm)
 
-        # Phi angle resolution for inverse kinematics
-        self.phi_resolution = phi_resolution
-        self.phi_deg_values = [0]  # Currently only using phi = 0
-        
         # Denavit-Hartenberg parameters
         self.dh_params = [
             {'alpha': 0, 'a': 0, 'd': 0},                    # Base joint
@@ -58,9 +54,7 @@ class Kinematic:
 
         desired_wrist_z = pz + self.a4
         print(f"Desired wrist position: ({desired_wrist_x:.3f}, {desired_wrist_z:.3f}) m")
-        # Iterate through different phi values (end-effector orientation)
         
-        # Calculate elbow angle (theta2)
         # Subtract a1 offsets to get wrist position relative to shoulder
         wrist_x_dash = desired_wrist_x - self.a1_horizontal
         wrist_z_dash = desired_wrist_z - self.a0 - self.a1_vertical
