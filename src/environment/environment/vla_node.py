@@ -51,6 +51,11 @@ class VLANode(Node):
         self.current_prompt = "move to target position"  # Default prompt
         self.processing_lock = threading.Lock()
         
+        # Action sequence execution state
+        self.action_sequence = None
+        self.current_timestep = 0
+        self.sequence_length = 0
+        
         # Publishers
         self.position_publisher = self.create_publisher(
             Point,
@@ -74,11 +79,14 @@ class VLANode(Node):
         )
         
         # Processing timer (run inference at lower frequency)
-        self.inference_timer = self.create_timer(1.0, self.run_inference)  # 1 Hz
+        self.inference_timer = self.create_timer(2.0, self.run_inference)  # 0.5 Hz for new sequences
+        
+        # Action execution timer (execute actions from sequence at higher frequency)
+        self.execution_timer = self.create_timer(0.5, self.execute_next_action)  # 2 Hz for smooth execution
         
         # Load model in separate thread to avoid blocking
         self.model_thread = threading.Thread(target=self.load_model)
-        self.model_thread.daemon = True
+        self.model_thread.daemon =    True
         self.model_thread.start()
         
         self.get_logger().info("VLA Node initialized. Loading Octo model...")
@@ -111,7 +119,7 @@ class VLANode(Node):
                 
                 # Debug information
                 self.get_logger().info(
-                    f"📸 Received image: {msg.width}x{msg.height}, "
+                    f"Received image: {msg.width}x{msg.height}, "
                     f"frame_id: {msg.header.frame_id}, "
                     f"timestamp: {msg.header.stamp.sec}.{msg.header.stamp.nanosec}"
                 )
@@ -170,15 +178,23 @@ class VLANode(Node):
             
             # Expected format: [1, 4, 7] - [batch, timesteps, dof]
             if len(action.shape) == 3 and action.shape == (1, 4, 7):
-                # Take the last timestep (most recent action)
-                # action[0, -1, :] gives us the 7-DOF action vector from the last timestep
-                action_vector = action[0, -1, :]  # Shape: [7]
+                # Store the entire action sequence for sequential execution
+                # action[0, :, :] gives us all timesteps: shape [4, 7]
+                self.action_sequence = action[0, :, :].copy()  # Shape: [4, 7] 
+                self.sequence_length = action.shape[1]  # 4 timesteps
+                self.current_timestep = 0  # Start from first timestep
+                
+                self.get_logger().info(f"Stored new action sequence: {self.sequence_length} timesteps")
+                return None  # Don't return a position here, let execute_next_action handle it
                 
             elif len(action.shape) == 3:
-                # Handle other 3D shapes - take last timestep
+                # Handle other 3D shapes - store entire sequence
                 batch, timesteps, dof = action.shape
-                action_vector = action[0, -1, :] if timesteps > 0 else action[0, 0, :]
-                self.get_logger().info(f"Using action from shape [{batch}, {timesteps}, {dof}]")
+                self.action_sequence = action[0, :, :].copy()  # Shape: [timesteps, dof]
+                self.sequence_length = timesteps
+                self.current_timestep = 0
+                self.get_logger().info(f"Stored action sequence from shape [{batch}, {timesteps}, {dof}]")
+                return None
                 
             elif len(action.shape) == 2:
                 # Handle 2D case [batch, dof] or [timesteps, dof]
@@ -196,14 +212,74 @@ class VLANode(Node):
             # Convert to numpy if not already
             action_vector = np.array(action).flatten()
         
-        # Extract x, y, z coordinates (first 3 elements of the 7-DOF vector)
+    
+        x, y, z = float(action_vector[0]), float(action_vector[1]), float(action_vector[2])
+        
+        self.get_logger().debug(f"Raw action values: x={x:.4f}, y={y:.4f}, z={z:.4f}")
+        
+        # Convert to proper scale and bounds
+        # Assuming action is normalized to [-1, 1], scale to robot workspace
+        x = float(0.2 + 0.15 * x)  # Scale to [0.05, 0.35] range
+        y = float(0.2 * y)         # Scale to [-0.2, 0.2] range  
+        z = float(0.15 + 0.1 * z)  # Scale to [0.05, 0.25] range
+        
+        # Clamp values to safe workspace limits
+        x = max(0.05, min(0.35, x))
+        y = max(-0.2, min(0.2, y))
+        z = max(0.05, min(0.25, z))
+        
+        return x, y, z
+
+    def execute_next_action(self):
+        """Execute the next action in the current sequence"""
+        with self.processing_lock:
+            # Check if we have a valid action sequence
+            if (self.action_sequence is None or 
+                self.current_timestep >= self.sequence_length):
+                return  # sequence completed
+            
+            # Get the current timestep action
+            action_vector = self.action_sequence[self.current_timestep, :]  # Shape: [7]
+            
+            # Convert action to target position using existing method
+            x, y, z = self.action_vector_to_position(action_vector)
+            
+            # Create and publish target position
+            target_pos = Point()
+            target_pos.x = x
+            target_pos.y = y  
+            target_pos.z = z
+            
+            self.position_publisher.publish(target_pos)
+            
+            self.get_logger().info(
+                f"Executed timestep {self.current_timestep + 1}/{self.sequence_length}: "
+                f"x={x:.3f}, y={y:.3f}, z={z:.3f}"
+            )
+            
+            # Move to next timestep
+            self.current_timestep += 1
+            
+            # Check if sequence is complete
+            if self.current_timestep >= self.sequence_length:
+                self.get_logger().info("✅ Action sequence completed!")
+                self.action_sequence = None  # Clear completed sequence
+
+    def action_vector_to_position(self, action_vector):
+        """Convert a single action vector to target position (helper method)"""
+        # Extract only x, y, z coordinates (first 3 elements of the 7-DOF vector)
         if len(action_vector) >= 3:
             x, y, z = float(action_vector[0]), float(action_vector[1]), float(action_vector[2])
             
-            self.get_logger().debug(f"Raw action values: x={x:.4f}, y={y:.4f}, z={z:.4f}")
+            # Log all available action components for debugging
+            if len(action_vector) >= 7:
+                roll, pitch, yaw, gripper = action_vector[3:7]
+                self.get_logger().debug(
+                    f"Action: x={x:.4f}, y={y:.4f}, z={z:.4f}, "
+                    f"roll={roll:.4f}, pitch={pitch:.4f}, yaw={yaw:.4f} (unused), gripper={gripper:.4f}"
+                )
             
             # Convert to proper scale and bounds
-            # Assuming action is normalized to [-1, 1], scale to robot workspace
             x = float(0.2 + 0.15 * x)  # Scale to [0.05, 0.35] range
             y = float(0.2 * y)         # Scale to [-0.2, 0.2] range  
             z = float(0.15 + 0.1 * z)  # Scale to [0.05, 0.25] range
@@ -217,15 +293,19 @@ class VLANode(Node):
             # Default position if action is too short
             x, y, z = 0.2, 0.0, 0.1
             self.get_logger().warn(f"Action vector too short ({len(action_vector)}), using default position")
-        
-        return x, y, z
 
     def run_inference(self):
-        """Run VLA inference and publish target position"""
+        """Run VLA inference to generate new action sequence"""
         if not self.model_loaded or self.model is None:
             return
-            
+        
+        # Skip if we're still executing a previous sequence
         with self.processing_lock:
+            if (self.action_sequence is not None and 
+                self.current_timestep < self.sequence_length):
+                self.get_logger().debug(f"Still executing sequence: {self.current_timestep}/{self.sequence_length}")
+                return
+            
             current_image = self.current_image
             current_prompt = self.current_prompt
         
@@ -243,9 +323,7 @@ class VLANode(Node):
             # Create task from prompt
             task = self.model.create_tasks(texts=[current_prompt])
             
-            # Run model inference
-          
-            # Try with unnormalization statistics first
+            # Run model inference to get new action sequence
             action = self.model.sample_actions(
                 observation, 
                 task, 
@@ -253,18 +331,11 @@ class VLANode(Node):
                 rng=jax.random.PRNGKey(int(time.time() * 1000) % 2**31)
             )
             
-            # Convert action to target position
-            x, y, z = self.action_to_position(action)
+            # Store the action sequence for sequential execution
+            # This will set self.action_sequence and reset self.current_timestep
+            self.action_to_position(action)
             
-            # Create and publish target position
-            target_pos = Point()
-            target_pos.x = x
-            target_pos.y = y  
-            target_pos.z = z
-            
-            self.position_publisher.publish(target_pos)
-            
-            self.get_logger().info(f"Published target position: x={x:.3f}, y={y:.3f}, z={z:.3f}")
+            self.get_logger().info("Generated new action sequence for execution")
             self.get_logger().debug(f"Raw action shape: {action.shape if hasattr(action, 'shape') else 'no shape'}")
             
         except Exception as e:

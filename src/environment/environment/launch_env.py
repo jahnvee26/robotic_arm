@@ -156,15 +156,13 @@ class IsaacSimEnvironmentNode(Node):
     def setup_camera(self):
         """Setup camera for VLA vision input"""
         try:
-            self.get_logger().info("🔧 Setting up camera...")
+            self.get_logger().info(" Setting up camera...")
             
             camera_position = np.array([0.9, -1.2, 0.5])  # Back and to the side, elevated
-            
+        
             # Calculate orientation to look toward the robot workspace center
             target_position = np.array([0.1, 0.05, 0.2])  # Center between robot and cube
-            
-            # Simple look-at calculation using euler angles
-            # Point camera toward target
+
             direction = target_position - camera_position
             direction = direction / np.linalg.norm(direction)
             
@@ -186,7 +184,7 @@ class IsaacSimEnvironmentNode(Node):
                 orientation=camera_orientation
             )
             
-            self.get_logger().info("📷 Camera created, adding to world...")
+            self.get_logger().info("Camera created, adding to world...")
             
             # Add camera to world and initialize
             self.world.scene.add(self.camera)

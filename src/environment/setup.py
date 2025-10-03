@@ -24,7 +24,6 @@ setup(
             'ik_node = environment.ik_node:main',
             'keyboard_control = environment.keyboard_control:main',
             'vla_node = environment.vla_node:main',
-            'vla_test_publisher = environment.vla_test_publisher:main',
             'image_viewer = environment.image_viewer:main',
         ],
     },
