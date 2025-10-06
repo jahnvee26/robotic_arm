@@ -50,6 +50,12 @@ class IsaacSimEnvironmentNode(Node):
             '/camera/image',
             10
         )
+        # # Top view camera publisher - 
+        self.top_camera_publisher = self.create_publisher(
+            Image,
+            '/camera/top_view',
+            10
+        )
         # Isaac Sim setup
         self.setup_isaac_sim()
         
@@ -149,95 +155,130 @@ class IsaacSimEnvironmentNode(Node):
                 color=np.array([0, 0, 1])
             )
         )
-        
-        # Setup camera for VLA
-        self.setup_camera()
+        # Setup cameras for VLA
+        self.setup_cameras()
 
-    def setup_camera(self):
-        """Setup camera for VLA vision input"""
-        try:
-            self.get_logger().info(" Setting up camera...")
-            
-            camera_position = np.array([0.9, -1.2, 0.5])  # Back and to the side, elevated
+    def setup_cameras(self):
+        """Setup cameras for VLA vision input - side view and top view"""
+        self.get_logger().info(" Setting up cameras...")
         
-            # Calculate orientation to look toward the robot workspace center
-            target_position = np.array([0.1, 0.05, 0.2])  # Center between robot and cube
-
-            direction = target_position - camera_position
-            direction = direction / np.linalg.norm(direction)
+        # Side view camera (existing camera)
+        camera_position = np.array([0.9, -1.2, 0.5])  # Back and to the side, elevated
+        target_position = np.array([0.1, 0.05, 0.2])  # Center between robot and cube
+        direction = target_position - camera_position
+        direction = direction / np.linalg.norm(direction)
+        
+        # Calculate pitch (up/down rotation)
+        pitch = -np.arcsin(direction[2])  # Negative because we want to look down          
+        # Calculate yaw (left/right rotation)  
+        yaw = np.arctan2(direction[1], direction[0])
+        
+        # Convert to degrees and create orientation
+        euler_angles = np.array([0, np.degrees(pitch), np.degrees(yaw)])
+        camera_orientation = rot_utils.euler_angles_to_quats(euler_angles, degrees=True)
+        
+        # Create side view camera with specific FOV
+        self.camera = Camera(
+            prim_path="/World/Camera",
+            name="side_camera",
+            position=camera_position,
+            frequency=20,
+            resolution=(256, 256),
+            orientation=camera_orientation
+        )
+        
+        self.get_logger().info(" Side view camera created")
+        
+        # # Top view camera - COMMENTED OUT FOR DEBUGGING
+        top_camera_position = np.array([1.4, 0.15, 0.5])  
+        target_position = np.array([0.1, 0.05, 0.25])  
+        top_direction = target_position - top_camera_position
+        top_direction = top_direction / np.linalg.norm(top_direction)
+        
+        # Calculate pitch (up/down rotation) for top camera
+        top_pitch = -np.arcsin(top_direction[2])          
+        # Calculate yaw (left/right rotation) for top camera
+        top_yaw = np.arctan2(top_direction[1], top_direction[0])
+        
+        # Convert to degrees and create orientation
+        top_euler_angles = np.array([0, np.degrees(top_pitch), np.degrees(top_yaw)])
+        top_camera_orientation = rot_utils.euler_angles_to_quats(top_euler_angles, degrees=True)
+        
+        self.top_camera = Camera(
+            prim_path="/World/TopCamera",
+            name="top_camera",
+            position=top_camera_position,
+            frequency=20,
+            resolution=(256, 256),
+            orientation=top_camera_orientation
+        )
+        
+        self.get_logger().info("📷 Top view camera created")
+        
+        # Add cameras to world and initialize
+        self.world.scene.add(self.camera)
+        self.world.scene.add(self.top_camera)  
+        self.camera.initialize()
+        self.top_camera.initialize()  
+        
+        self.get_logger().info("✅ Camera setup complete - side view and top view cameras ready")
             
-            # Calculate pitch (up/down rotation)
-            pitch = -np.arcsin(direction[2])  # Negative because we want to look down
-            
-            # Calculate yaw (left/right rotation)  
-            yaw = np.arctan2(direction[1], direction[0])
-            
-            # Convert to degrees and create orientation
-            euler_angles = np.array([0, np.degrees(pitch), np.degrees(yaw)])
-            camera_orientation = rot_utils.euler_angles_to_quats(euler_angles, degrees=True)
-            
-            self.camera = Camera(
-                prim_path="/World/Camera",
-                position=camera_position,
-                frequency=20,
-                resolution=(256, 256),
-                orientation=camera_orientation
-            )
-            
-            self.get_logger().info("Camera created, adding to world...")
-            
-            # Add camera to world and initialize
-            self.world.scene.add(self.camera)
-            self.camera.initialize()
-            
-            self.get_logger().info("✅ Camera setup complete - positioned to view robot and cube")
-            
-        except Exception as e:
-            self.get_logger().error(f"❌ Failed to setup camera: {e}")
-            self.camera = None
-    
     def start_camera_publishing(self):
         """Start camera publishing after Isaac Sim is fully initialized"""
         #self.get_logger().info("Starting camera publishing...")
         # Cancel the one-time timer and start the regular camera publishing
-        self.camera_publishing_timer = self.create_timer(0.1, self.publish_camera_image)
+        self.camera_publishing_timer = self.create_timer(0.1, self.publish_camera_images)
     
-    def publish_camera_image(self):
-        """Capture and publish camera image for VLA"""
+    def publish_camera_images(self):
+        """Capture and publish images from both cameras"""
         try:
-            if not hasattr(self, 'camera') or self.camera is None:
-                return
-            
-            # Get current frame first
-            self.camera.get_current_frame()
-            
-            # Get RGB image
-            rgb_data = self.camera.get_rgba()
-            if rgb_data is None:
-                self.get_logger().warn("No camera data available")
-                return
-                
-            # Convert from RGBA to RGB
-            rgb_image = rgb_data[:, :, :3]
-            
-            # Convert from float [0,1] to uint8 [0,255]
-            if rgb_image.dtype == np.float32 or rgb_image.dtype == np.float64:
-                rgb_image = (rgb_image * 255).astype(np.uint8)
-            
-            # Convert RGB to BGR for ROS
-            bgr_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
-            
-            # Create ROS Image message
-            ros_image = self.bridge.cv2_to_imgmsg(bgr_image, "bgr8")
-            ros_image.header = Header()
-            ros_image.header.stamp = self.get_clock().now().to_msg()
-            ros_image.header.frame_id = "isaac_sim_camera"
-            
-            # Publish image
-            self.camera_publisher.publish(ros_image)
+            # Publish side view camera
+            self.publish_single_camera(
+                self.camera, 
+                self.camera_publisher, 
+                "isaac_sim_camera"
+            )
+            # Publish top view camera 
+            self.publish_single_camera(
+                self.top_camera, 
+                self.top_camera_publisher, 
+                "isaac_sim_top_camera"
+            )
             
         except Exception as e:
             self.get_logger().error(f"❌ Camera publishing error: {e}")
+    
+    def publish_single_camera(self, camera, publisher, frame_id):
+        """Capture and publish a single camera image"""
+        if not hasattr(self, 'camera') or camera is None:
+            return
+        
+        # Get current frame first
+        camera.get_current_frame()
+        
+        # Get RGB image
+        rgb_data = camera.get_rgba()
+        if rgb_data is None:
+            return
+            
+        # Convert from RGBA to RGB
+        rgb_image = rgb_data[:, :, :3]
+        
+        # Convert from float [0,1] to uint8 [0,255]
+        if rgb_image.dtype == np.float32 or rgb_image.dtype == np.float64:
+            rgb_image = (rgb_image * 255).astype(np.uint8)
+        
+        # Convert RGB to BGR for ROS
+        bgr_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
+        
+        # Create ROS Image message
+        ros_image = self.bridge.cv2_to_imgmsg(bgr_image, "bgr8")
+        ros_image.header = Header()
+        ros_image.header.stamp = self.get_clock().now().to_msg()
+        ros_image.header.frame_id = frame_id
+        
+        # Publish image
+        publisher.publish(ros_image)
 
     def world_step(self):
         if simulation_app.is_running():

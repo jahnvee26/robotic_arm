@@ -25,6 +25,7 @@ setup(
             'keyboard_control = environment.keyboard_control:main',
             'vla_node = environment.vla_node:main',
             'image_viewer = environment.image_viewer:main',
+            'test_trajectory = environment.test_trajectory:main',
         ],
     },
 )

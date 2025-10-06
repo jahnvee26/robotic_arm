@@ -41,8 +41,10 @@ class OctoBridgeNode(Node):
         
         # State variables
         self.current_image = None
+        self.current_top_view_image = None
         self.current_prompt = "pick up the cube"  # Default prompt
         self.processing_lock = threading.Lock()
+        self.inference_completed = False  # Track if inference has been run
         
         # Action sequence execution state (similar to VLA node)
         self.action_sequence = None
@@ -54,15 +56,13 @@ class OctoBridgeNode(Node):
         self.octo_script = "/home/welgpu/jahnvee/ddp/robotic_arm/src/environment/environment/octo_inference.py"
         
         # Performance configuration parameters
-        self.declare_parameter('inference_rate', 0.5)    # Hz (0.5 Hz = every 2 seconds)
         self.declare_parameter('execution_rate', 2.0)     # Hz (2 Hz = every 0.5 seconds) 
         self.declare_parameter('use_image_caching', True) # Cache identical images
         
-        inference_rate = self.get_parameter('inference_rate').value
         execution_rate = self.get_parameter('execution_rate').value
         self.use_caching = self.get_parameter('use_image_caching').value
         
-        self.get_logger().info(f"⚙️ Performance config: inference={inference_rate}Hz, execution={execution_rate}Hz, caching={self.use_caching}")
+        self.get_logger().info(f"🔧 Performance config: execution={execution_rate}Hz, caching={self.use_caching}")
         
         # Publishers
         self.position_publisher = self.create_publisher(
@@ -72,13 +72,20 @@ class OctoBridgeNode(Node):
         )
         
         # Subscribers
-        self.image_subscription = self.create_subscription(
+        self.side_image_subscription = self.create_subscription(
             Image,
             '/camera/image',
-            self.image_callback,
+            self.side_image_callback,
             10
         )
         
+        self.top_image_subscription = self.create_subscription(
+            Image,
+            '/camera/top_view',
+            self.top_image_callback,
+            10
+        )
+
         self.prompt_subscription = self.create_subscription(
             String,
             '/text_prompt',
@@ -86,16 +93,16 @@ class OctoBridgeNode(Node):
             10
         )
         
-        # Processing timer (run inference at configurable frequency)
-        self.inference_timer = self.create_timer(1.0/inference_rate, self.run_inference)
+        # Processing timer (run inference once when image is available)
+        self.inference_timer = self.create_timer(2.0, self.check_and_run_inference)  # Check every 2 seconds for first image
         
         # Action execution timer (execute actions from sequence at higher frequency)
         self.execution_timer = self.create_timer(1.0/execution_rate, self.execute_next_action)
         
-        self.get_logger().info("🌉 Octo Bridge Node initialized - connecting ROS2 to Octo conda environment")
+        self.get_logger().info("🚀 Octo Bridge Node initialized - connecting ROS2 to Octo conda environment")
 
-    def image_callback(self, msg: Image):
-        """Callback for receiving camera images"""
+    def side_image_callback(self, msg: Image):
+        """Callback for receiving side view camera images"""
         try:
             # Convert ROS image to OpenCV format
             cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
@@ -104,30 +111,56 @@ class OctoBridgeNode(Node):
                 self.current_image = cv_image
                 
                 self.get_logger().debug(
-                    f"Received image: {msg.width}x{msg.height}, "
+                    f"Received side view image: {msg.width}x{msg.height}, "
                     f"frame_id: {msg.header.frame_id}"
                 )
                 
         except Exception as e:
-            self.get_logger().error(f"Error processing image: {e}")
+            self.get_logger().error(f"Error processing side view image: {e}")
 
+    def top_image_callback(self, msg: Image):
+        """Callback for receiving top view camera images"""
+        try:
+            # Convert ROS image to OpenCV format
+            cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+            
+            with self.processing_lock:
+                self.current_top_view_image = cv_image
+                
+                self.get_logger().debug(
+                    f"Received top view image: {msg.width}x{msg.height}, "
+                    f"frame_id: {msg.header.frame_id}"
+                )
+                
+        except Exception as e:
+            self.get_logger().error(f"Error processing top view image: {e}")
     def prompt_callback(self, msg: String):
         """Callback for receiving text prompts"""
         with self.processing_lock:
             self.current_prompt = msg.data
             self.get_logger().info(f"Received prompt: '{self.current_prompt}'")
 
+    def check_and_run_inference(self):
+        """Run inference only once when image is available"""
+        if self.inference_completed:
+            return  # Inference already completed
+            
+        if self.current_image is not None:
+            self.get_logger().info(" Camera image available - running one-time Octo inference")
+            self.run_inference()
+            self.inference_completed = True
+            # Cancel the timer since we only need to run once
+            self.inference_timer.cancel()
+            self.get_logger().info("✅ One-time inference completed - timer disabled")
+        else:
+            self.get_logger().debug(" Waiting for camera image...")
+
     def run_inference(self):
-        """Run Octo inference via subprocess to conda environment"""
+        """Run Octo inference once via subprocess to conda environment"""
         start_time = time.time()
         
-        # Skip if we're still executing a previous sequence
+        # Get current state
         with self.processing_lock:
-            if (self.action_sequence is not None and 
-                self.current_timestep < self.sequence_length):
-                self.get_logger().debug(f"Still executing sequence: {self.current_timestep}/{self.sequence_length}")
-                return
-            
             current_image = self.current_image
             current_prompt = self.current_prompt
         
@@ -250,6 +283,17 @@ class OctoBridgeNode(Node):
             if self.current_timestep >= self.sequence_length:
                 self.get_logger().info("✅ Action sequence completed!")
                 self.action_sequence = None  # Clear completed sequence
+
+#Future use in case of manual re-triggering
+    # def trigger_new_inference(self):
+    #     """Manually trigger a new inference (useful for testing new prompts)"""
+    #     with self.processing_lock:
+    #         self.inference_completed = False
+    #         self.action_sequence = None
+    #         self.current_timestep = 0
+    #     self.get_logger().info("🔄 Inference reset - will run on next check")
+    #     # Restart the timer
+    #     self.inference_timer = self.create_timer(2.0, self.check_and_run_inference)
 
 
 def main(args=None):

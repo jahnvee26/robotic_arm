@@ -50,7 +50,7 @@ class OctoInference:
             # Log model information
             if hasattr(self.model, 'dataset_statistics'):
                 datasets = list(self.model.dataset_statistics.keys())
-                print(f"📊 Available datasets: {datasets}")
+                print(f"Available datasets: {datasets}")
                 
         except Exception as e:
             print(f"❌ Failed to load Octo model: {e}")
@@ -178,7 +178,8 @@ class OctoInference:
                     result['action_sequence'].append(timestep_data)
                     result['target_positions'].append(position)
                     
-                    print(f"  Timestep {t+1}: x={position['x']:.3f}, y={position['y']:.3f}, z={position['z']:.3f}")
+                    print(f"  Timestep {t+1}: x={position['x']:.3f}, y={position['y']:.3f}, z={position['z']:.3f}, "
+                          f"roll={position['roll']:.3f}, pitch={position['pitch']:.3f}, yaw={position['yaw']:.3f}")
             
             else:
                 # Handle other shapes
@@ -195,7 +196,7 @@ class OctoInference:
         return result
     
     def action_to_position(self, action_vector):
-        """Convert action vector to target position
+        """Convert action vector to target position with orientation
         Args:
             action_vector: Single action vector [x, y, z, roll, pitch, yaw, gripper]
         Returns:
@@ -205,27 +206,50 @@ class OctoInference:
         if len(action_vector) >= 3:
             x, y, z = float(action_vector[0]), float(action_vector[1]), float(action_vector[2])
             
-            # Optional: log all DOF for debugging
-            if len(action_vector) >= 7:
-                roll, pitch, yaw, gripper = action_vector[3:7]
-                # Note: Yaw not supported by gripper hardware
+            # Extract orientation (elements 3-5) if available
+            roll, pitch, yaw = 0.0, 0.0, 0.0
+            if len(action_vector) >= 6:
+                roll, pitch, yaw = float(action_vector[3]), float(action_vector[4]), float(action_vector[5])
             
-            # Convert to proper scale and bounds (same as VLA node)
+            # Extract gripper if available
+            gripper = 0.0
+            if len(action_vector) >= 7:
+                gripper = float(action_vector[6])
+                
+            # Log all DOF for debugging
+            print(f"    Raw action: x={x:.3f}, y={y:.3f}, z={z:.3f}, "
+                  f"roll={roll:.3f}, pitch={pitch:.3f}, yaw={yaw:.3f}, gripper={gripper:.3f}")
+            
+            # Convert position to proper scale and bounds (same as VLA node)
             x = float(0.2 + 0.15 * x)  # Scale to [0.05, 0.35] range
             y = float(0.2 * y)         # Scale to [-0.2, 0.2] range  
             z = float(0.15 + 0.1 * z)  # Scale to [0.05, 0.25] range
             
-            # Clamp values to safe workspace limits
+            # Clamp position values to safe workspace limits
             x = max(0.05, min(0.35, x))
             y = max(-0.2, min(0.2, y))
             z = max(0.05, min(0.25, z))
             
+            # Scale orientation values (keep as delta angles in radians)
+            # Note: These are typically small delta values, so minimal scaling
+            roll = max(-0.5, min(0.5, roll))    # Limit to ±0.5 radians (~±30 degrees)
+            pitch = max(-0.5, min(0.5, pitch))
+            yaw = max(-0.5, min(0.5, yaw))
+            
         else:
             # Default position if action is too short
             x, y, z = 0.2, 0.0, 0.1
+            roll, pitch, yaw = 0.0, 0.0, 0.0
             print(f"⚠️ Action vector too short ({len(action_vector)}), using default position")
         
-        return {'x': x, 'y': y, 'z': z}
+        return {
+            'x': x, 
+            'y': y, 
+            'z': z,
+            'roll': roll,
+            'pitch': pitch,
+            'yaw': yaw
+        }
 
 
 def main():
