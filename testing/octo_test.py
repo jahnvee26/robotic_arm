@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
 
-"""
-Octo Model Test Script
-
-This script loads and tests the Octo model for robotic arm control.
-"""
-
 from octo.model.octo_model import OctoModel
 import json
 import subprocess
@@ -16,9 +10,6 @@ from octo.data.utils.data_utils import NormalizationType
 import numpy as np
 
 def main():
-    """
-    Load and test the Octo model
-    """
     print("Loading Octo model...")
     
     # Load Octo model (small)
@@ -29,133 +20,139 @@ def main():
     print("Octo model loaded successfully!")
     print(f"Model type: {type(model)}")
     
-    # Print model information
-    print("\nModel configuration:")
-    if hasattr(model, 'config'):
-        print(f"Config: {model.config}")
+    # Configuration
+    WINDOW_SIZE = 2
+    NUM_STEPS = 5  # Number of inference steps to run
     
-    # Test basic model functionality
-    print("\nTesting model...")
-    # Example: Create dummy observation and task
-    # You can modify these based on your specific use case
+    print(f"\n=== Running Inference Loop with WINDOW_SIZE = {WINDOW_SIZE} ===")
+    
+    # Create goal image (dummy for now - in real use this would be target state)
+    goal_image = jnp.zeros((256, 256, 3))  # Target image
+    
+    # Language instruction for the task
+    language_instruction = "pick up the cube"
+    
     try:
-        # Create a test observation with correct format (batch + time horizon)
-        img = jnp.zeros((256, 256, 3))  # Example image shape
-        # Add batch + time horizon dimensions [batch, time, height, width, channels]
-        img = img[np.newaxis, np.newaxis, ...]  # Shape: (1, 1, 256, 256, 3)
+        # Initialize dummy images for the window
+        # In real use, these would be actual camera observations
+        images = []
+        for i in range(NUM_STEPS):
+            # Create dummy image for each step
+            img = jnp.zeros((256, 256, 3))  # RGB image
+            images.append(img)
         
-        dummy_obs = {
-            'image_primary': img,
-            'timestep_pad_mask': np.array([[True]])  # Shape: (1, 1) - batch x time
-        }
+        # Run inference loop, this model only uses 3rd person image observations for bridge
+        # Collect predicted and true actions
+        pred_actions, true_actions = [], []
         
-        # Create a simple test task using model.create_tasks()
-        dummy_task = model.create_tasks(texts=["move to target position"])
+        for step in range(len(images) - (WINDOW_SIZE - 1)):
+            print(f"\n--- Inference Step {step + 1} ---")
+            
+            # Create input window of images
+            input_images = np.stack(images[step:step+WINDOW_SIZE])[None]  # Add batch dim
+            print(f"Input images shape: {input_images.shape}")
+            
+            observation = {
+                'image_primary': input_images,
+                'timestep_pad_mask': np.full((1, input_images.shape[1]), True, dtype=bool)
+            }
+            
+            print(f"Observation image_primary shape: {observation['image_primary'].shape}")
+            print(f"Timestep pad mask shape: {observation['timestep_pad_mask'].shape}")
+            
+            # Create task for this step
+            task = model.create_tasks(texts=["pick up the cube"])
+            
+            # This returns *normalized* actions --> we need to unnormalize using the dataset statistics
+            try:
+                actions = model.sample_actions(
+                    observation,
+                    task,
+                    unnormalization_statistics=model.dataset_statistics["bridge_dataset"]["action"],
+                    rng=jax.random.PRNGKey(step)  # Different random key for each step
+                )
+                print(f"✅ Inference successful for step {step + 1}")
+                
+            except Exception as e:
+                print(f"Error with unnormalization: {e}")
+                print("Trying without unnormalization...")
+                actions = model.sample_actions(
+                    observation,
+                    task,
+                    rng=jax.random.PRNGKey(step)
+                )
+                print(f"✅ Inference successful (no unnormalization) for step {step + 1}")
+            
+            # Remove batch dimension for processing
+            actions = actions[0]  # Remove batch dim
+            print(f"Actions shape after removing batch: {actions.shape}")
+            print(f"Raw actions: {actions}")
+            
+            # Store predicted actions
+            pred_actions.append(actions)
+            
+            # Get the final window step for processing 
+            final_window_step = step + WINDOW_SIZE - 1
+            
+            # In a real scenario, you would process the action here
+            # For example, extract position and orientation:
+            if actions.shape[-1] >= 6:  # Ensure we have at least 6 DOF
+                position = actions[:3] if len(actions.shape) == 1 else actions[final_window_step][:3]
+                orientation = actions[3:6] if len(actions.shape) == 1 else actions[final_window_step][3:6]
+                
+                print(f"  Position: [{position[0]:.4f}, {position[1]:.4f}, {position[2]:.4f}]")
+                print(f"  Orientation: [{orientation[0]:.4f}, {orientation[1]:.4f}, {orientation[2]:.4f}]")
+                
+                if actions.shape[-1] >= 7:
+                    gripper = actions[6] if len(actions.shape) == 1 else actions[final_window_step][6]
+                    print(f"  Gripper: {gripper:.4f}")
+            else:
+                print(f"  Action vector: {actions}")
         
-        print("Model loaded and ready for inference!")
-        print(f"Observation keys: {list(dummy_obs.keys())}")
-        print(f"Image shape: {dummy_obs['image_primary'].shape}")
-        print(f"Timestep mask shape: {dummy_obs['timestep_pad_mask'].shape}")
+        print(f"\n✅ Completed inference loop with {len(pred_actions)} predictions")
+        print(f"Total predictions collected: {len(pred_actions)}")
         
-        # Test model inference to see what output it gives
-        print("\n=== Testing Model Inference ===")
+        # Summary of all predictions
+        print(f"\n=== Prediction Summary ===")
+        for i, action in enumerate(pred_actions):
+            print(f"Step {i+1}: {action}")
+            
+    except Exception as e:
+        print(f"Error during inference loop: {e}")
         
-        # Run model inference using the correct sample_actions method
-        print("Running model inference with sample_actions...")
+        # Fallback to simple single-step inference
+        print("\nFalling back to simple inference test...")
         try:
+            # Create a test observation with correct format (batch + time horizon)
+            img = jnp.zeros((256, 256, 3))  # Example image shape
+            # Add batch + time horizon dimensions [batch, time, height, width, channels]
+            img = img[np.newaxis, np.newaxis, ...]  # Shape: (1, 1, 256, 256, 3)
+            
+            dummy_obs = {
+                'image_primary': img,
+                'timestep_pad_mask': np.array([[True]])  # Shape: (1, 1) - batch x time
+            }
+            
+            # Create a simple test task using model.create_tasks()
+            dummy_task = model.create_tasks(texts=["move to target position"])
+            
+            # Run model inference using the correct sample_actions method
             action = model.sample_actions(
                 dummy_obs, 
                 dummy_task, 
                 unnormalization_statistics=model.dataset_statistics["bridge_dataset"]["action"], 
                 rng=jax.random.PRNGKey(0)
             )
-            print("✅ Model inference successful!")
-            output = action  # For compatibility with rest of the code
+            print("✅ Fallback inference successful!")
+            output = action
             
-        except Exception as e1:
-            print(f"sample_actions failed: {e1}")
-            print("Available dataset statistics keys:", list(model.dataset_statistics.keys()) if hasattr(model, 'dataset_statistics') else "No dataset_statistics")
-            
-            # Try without unnormalization_statistics
-            try:
-                print("Trying without unnormalization_statistics...")
-                action = model.sample_actions(
-                    dummy_obs, 
-                    dummy_task, 
-                    rng=jax.random.PRNGKey(0)
-                )
-                print("✅ Model inference successful (without unnormalization)!")
-                output = action
-                
-            except Exception as e2:
-                print(f"sample_actions also failed without unnormalization: {e2}")
-                return
-        
-        print(f"\nModel Output Type: {type(output)}")
-        
-        # Handle the action output (could be direct array or dict)
-        if hasattr(output, 'shape'):
-            # Direct action array
-            actions = output
-            print(f"\nActions shape: {actions.shape}")
-            print(f"Actions dtype: {actions.dtype}")
-            print(f"Actions (first few values): {actions.flatten()[:10]}")
-            print(f"Actions min: {jnp.min(actions):.6f}")
-            print(f"Actions max: {jnp.max(actions):.6f}")
-            print(f"Actions mean: {jnp.mean(actions):.6f}")
-            print(f"Full actions: {actions}")
-            
-        elif isinstance(output, dict):
-            print(f"Model Output Keys: {list(output.keys())}")
-            
-            # Print the action output
-            if 'actions' in output:
-                actions = output['actions']
-                print(f"\nActions shape: {actions.shape}")
-                print(f"Actions dtype: {actions.dtype}")
-                print(f"Actions (first few values): {actions.flatten()[:10]}")
-                print(f"Actions min: {jnp.min(actions):.6f}")
-                print(f"Actions max: {jnp.max(actions):.6f}")
-                print(f"Actions mean: {jnp.mean(actions):.6f}")
-            
-            # Print all outputs for debugging
-            print(f"\nFull model output:")
-            for key, value in output.items():
-                if hasattr(value, 'shape'):
-                    print(f"  {key}: shape={value.shape}, dtype={value.dtype}")
-                    if value.size <= 20:  # Only print small arrays
-                        print(f"    values: {value}")
-                    else:
-                        print(f"    sample values: {value.flatten()[:5]}...")
-                else:
-                    print(f"  {key}: {value}")
-        else:
-            print(f"Unexpected output type: {type(output)}")
-            print(f"Output: {output}")
-        
-        print("\nYou can now use the model for robotic arm control.")
-        
-    except Exception as e:
-        print(f"Error during model testing: {e}")
-        print("Model loaded but may need specific input format adjustments.")
-        
-        # Try alternative inference method
-        try:
-            print("\nTrying alternative inference method...")
-            # Some models might use different method names
-            if hasattr(model, 'predict'):
-                output = model.predict(dummy_obs, dummy_task)
-                print(f"Alternative method output: {output}")
-            elif hasattr(model, 'forward'):
-                output = model.forward(dummy_obs, dummy_task)
-                print(f"Forward method output: {output}")
-            else:
-                print("Available model methods:")
-                methods = [method for method in dir(model) if not method.startswith('_')]
-                print(methods[:10])  # Print first 10 methods
-                
         except Exception as e2:
-            print(f"Alternative method also failed: {e2}")
+            print(f"Fallback also failed: {e2}")
+            return
+        
+        print(f"Final fallback output: {output}")
+        
+    print("\nInference loop completed. You can now use this pattern for robotic arm control.")
 
 if __name__ == "__main__":
     main()

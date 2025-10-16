@@ -2,18 +2,19 @@
 """
 Test Trajectory Publisher
 
-This script publishes hardcoded target positions that mimic the VLA model output
+This script publishes hardcoded target poses that mimic the VLA model output
 to test if the robot arm moves correctly through the IK pipeline.
 
-Publishes to: /target_position (geometry_msgs/Point)
+Publishes to: /target_pose (geometry_msgs/Pose)
 """
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, Pose
 import time
 import json
 import os
+import math
 
 class TestTrajectoryNode(Node):
     """
@@ -23,10 +24,10 @@ class TestTrajectoryNode(Node):
     def __init__(self):
         super().__init__('test_trajectory_node')
         
-        # Publisher for target positions
-        self.position_publisher = self.create_publisher(
-            Point,
-            '/target_position',
+        # Publisher for target poses
+        self.pose_publisher = self.create_publisher(
+            Pose,
+            '/target_pose',
             10
         )
         
@@ -45,7 +46,7 @@ class TestTrajectoryNode(Node):
         )
         
         self.get_logger().info("🚀 Test Trajectory Node initialized")
-        self.get_logger().info(f"Loaded {self.max_steps} test positions from JSON")
+        self.get_logger().info(f"Loaded {self.max_steps} test poses from JSON")
         self.print_trajectory_info()
     
     def load_trajectory_from_json(self):
@@ -91,7 +92,7 @@ class TestTrajectoryNode(Node):
         self.get_logger().info("🚀 Starting execution in 2 seconds...")
 
     def publish_next_position(self):
-        """Publish the next position in the trajectory"""
+        """Publish the next pose in the trajectory"""
         if self.current_step >= self.max_steps:
             self.get_logger().info("✅ Test trajectory completed!")
             self.execution_timer.cancel()
@@ -100,26 +101,29 @@ class TestTrajectoryNode(Node):
         # Get current position
         pos_data = self.test_trajectory[self.current_step]
         
-        # Create and publish target position
-        target_pos = Point()
-        target_pos.x = pos_data['x']
-        target_pos.y = pos_data['y']
-        target_pos.z = pos_data['z']
+        # Create and publish target pose
+        target_pose = Pose()
         
-        self.position_publisher.publish(target_pos)
+        # Set position
+        target_pose.position.x = pos_data['x']
+        target_pose.position.y = pos_data['y']
+        target_pose.position.z = pos_data['z']
         
-        # Log with orientation if available
-        if 'roll' in pos_data and 'pitch' in pos_data and 'yaw' in pos_data:
-            self.get_logger().info(
-                f"📤 Published step {self.current_step + 1}/{self.max_steps}: "
-                f"x={target_pos.x:.3f}, y={target_pos.y:.3f}, z={target_pos.z:.3f}, "
-                f"roll={pos_data['roll']:.3f}, pitch={pos_data['pitch']:.3f}, yaw={pos_data['yaw']:.3f}"
-            )
-        else:
-            self.get_logger().info(
-                f"📤 Published step {self.current_step + 1}/{self.max_steps}: "
-                f"x={target_pos.x:.3f}, y={target_pos.y:.3f}, z={target_pos.z:.3f} (position only)"
-            )
+        # Set orientation (identity quaternion since roll=pitch=yaw=0)
+        # Identity quaternion represents no rotation: [x=0, y=0, z=0, w=1]
+        target_pose.orientation.x = 0.0
+        target_pose.orientation.y = 0.0
+        target_pose.orientation.z = 0.0
+        target_pose.orientation.w = 1.0
+        
+        self.pose_publisher.publish(target_pose)
+        
+        # Log with simplified pose information (all orientations are zero)
+        self.get_logger().info(
+            f"📤 Published step {self.current_step + 1}/{self.max_steps}: "
+            f"x={target_pose.position.x:.3f}, y={target_pose.position.y:.3f}, z={target_pose.position.z:.3f}, "
+            f"roll=0.0, pitch=0.0, yaw=0.0"
+        )
         
         # Move to next step
         self.current_step += 1
