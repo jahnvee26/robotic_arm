@@ -30,39 +30,36 @@ import time
 import math
 import numpy as np
 
-# Debug visualization flag
-# ENABLE_DEBUG_VISUALIZATION = True
+# Try to import tf_transformations, fallback to manual conversion
+try:
+    import tf_transformations
+    HAS_TF_TRANSFORMATIONS = True
+except ImportError:
+    HAS_TF_TRANSFORMATIONS = False
 
-# # Try to import tf_transformations, fallback to manual conversion
-# try:
-#     import tf_transformations
-#     HAS_TF_TRANSFORMATIONS = True
-# except ImportError:
-#     HAS_TF_TRANSFORMATIONS = False
-
-# def euler_to_quaternion(roll, pitch, yaw):
-#     """
-#     Convert Euler angles to quaternion (w, x, y, z)
-#     """
-#     # Convert to radians if in degrees
-#     roll = math.radians(roll) if abs(roll) > 2*math.pi else roll
-#     pitch = math.radians(pitch) if abs(pitch) > 2*math.pi else pitch  
-#     yaw = math.radians(yaw) if abs(yaw) > 2*math.pi else yaw
+def euler_to_quaternion(roll, pitch, yaw):
+    """
+    Convert Euler angles to quaternion (w, x, y, z)
+    """
+    # Convert to radians if in degrees
+    roll = math.radians(roll) if abs(roll) > 2*math.pi else roll
+    pitch = math.radians(pitch) if abs(pitch) > 2*math.pi else pitch  
+    yaw = math.radians(yaw) if abs(yaw) > 2*math.pi else yaw
     
-#     # Calculate quaternion components
-#     cy = math.cos(yaw * 0.5)
-#     sy = math.sin(yaw * 0.5)
-#     cp = math.cos(pitch * 0.5)
-#     sp = math.sin(pitch * 0.5)
-#     cr = math.cos(roll * 0.5)
-#     sr = math.sin(roll * 0.5)
+    # Calculate quaternion components
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
     
-#     w = cr * cp * cy + sr * sp * sy
-#     x = sr * cp * cy - cr * sp * sy
-#     y = cr * sp * cy + sr * cp * sy
-#     z = cr * cp * sy - sr * sp * cy
+    w = cr * cp * cy + sr * sp * sy
+    x = sr * cp * cy - cr * sp * sy
+    y = cr * sp * cy + sr * cp * sy
+    z = cr * cp * sy - sr * sp * cy
     
-#     return [x, y, z, w]  # Return in ROS format [x, y, z, w]
+    return [x, y, z, w]  # Return in ROS format [x, y, z, w]
 
 def rpy_to_rotmat(roll, pitch, yaw):
     """
@@ -81,6 +78,40 @@ def rpy_to_rotmat(roll, pitch, yaw):
                    [0, 0, 1]])
     
     return Rz @ Ry @ Rx
+
+def neutralize_pose_position(pose_data):
+    """
+    Apply inverse transformation to neutralize the pose orientation effects on position
+    Returns the neutral position where the gripper center would be with zero orientation
+    """
+    # Extract position and orientation
+    pos = np.array([pose_data.get('x', 0.0), pose_data.get('y', 0.0), pose_data.get('z', 0.0)])
+    roll = pose_data.get('roll', 0.0)
+    pitch = pose_data.get('pitch', 0.0)
+    yaw = pose_data.get('yaw', 0.0)
+    
+    # Get rotation matrix
+    R = rpy_to_rotmat(roll, pitch, yaw)
+    
+    # Apply inverse transformation to get neutral position
+    # The idea is: if the gripper was rotated, where would its center be
+    # if it was in neutral orientation?
+    R_inv = R.T  # Inverse of rotation matrix is its transpose
+    
+    # Apply inverse rotation to position to get neutral coordinates
+    neutral_pos = R_inv @ pos
+    
+    return {
+        'x': float(neutral_pos[0]),
+        'y': float(neutral_pos[1]),
+        'z': float(neutral_pos[2]),
+        'original_x': float(pos[0]),
+        'original_y': float(pos[1]),
+        'original_z': float(pos[2]),
+        'original_roll': roll,
+        'original_pitch': pitch,
+        'original_yaw': yaw
+    }
 
 class OctoBridgeNode(Node):
     """
@@ -112,13 +143,11 @@ class OctoBridgeNode(Node):
         # Performance configuration parameters
         self.declare_parameter('execution_rate', 2.0)     # Hz (2 Hz = every 0.5 seconds) 
         self.declare_parameter('use_image_caching', True) # Cache identical images
-        self.declare_parameter('debug_visualization', True) # Show debug images
         
         execution_rate = self.get_parameter('execution_rate').value
         self.use_caching = self.get_parameter('use_image_caching').value
-        self.debug_viz = self.get_parameter('debug_visualization').value
         
-        self.get_logger().info(f"🔧 Performance config: execution={execution_rate}Hz, caching={self.use_caching}, debug_viz={self.debug_viz}")
+        self.get_logger().info(f"🔧 Performance config: execution={execution_rate}Hz, caching={self.use_caching}")
         
         # Publishers
         self.pose_publisher = self.create_publisher(
@@ -150,13 +179,13 @@ class OctoBridgeNode(Node):
         )
         
         # Processing timer (run inference once when image is available)
-        #self.inference_timer = self.create_timer(2.0, self.check_and_run_inference)  # Check every 2 seconds for first image
-        self.inference_timer = self.create_timer(0.5, self.check_and_run_inference)
+        self.inference_timer = self.create_timer(2.0, self.check_and_run_inference)  # Check every 2 seconds for first image
+        
         # Action execution timer (execute actions from sequence at higher frequency)
         self.execution_timer = self.create_timer(1.0/execution_rate, self.execute_next_action)
         
         self.get_logger().info("🚀 Octo Bridge Node initialized - connecting ROS2 to Octo conda environment")
-        self.inference_timer = self.create_timer(0.5, self.check_and_run_inference)
+
     def side_image_callback(self, msg: Image):
         """Callback for receiving side view camera images"""
         try:
@@ -196,33 +225,6 @@ class OctoBridgeNode(Node):
             self.current_prompt = msg.data
             self.get_logger().info(f"Received prompt: '{self.current_prompt}'")
 
-    def show_debug_image(self, image, title="Debug Image"):
-        """Display debug image in a window (if GUI available)"""
-        try:
-            # Add text overlay showing prompt and timestamp
-            debug_img = image.copy()
-            
-            # Add prompt text
-            cv2.putText(debug_img, f"Prompt: {self.current_prompt}", 
-                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            # Add timestamp
-            timestamp = time.strftime("%H:%M:%S")
-            cv2.putText(debug_img, f"Time: {timestamp}", 
-                       (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            # Add resolution info
-            cv2.putText(debug_img, f"Size: {image.shape[1]}x{image.shape[0]}", 
-                       (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            # Display in window (non-blocking)
-            cv2.namedWindow(title, cv2.WINDOW_NORMAL)
-            cv2.imshow(title, debug_img)
-            cv2.waitKey(1)  # Non-blocking update
-            
-        except Exception as e:
-            self.get_logger().debug(f"Could not display debug image (no GUI?): {e}")
-
     def check_and_run_inference(self):
         """Run inference only once when image is available"""
         if self.inference_completed:
@@ -231,6 +233,7 @@ class OctoBridgeNode(Node):
         if self.current_image is not None:
             self.get_logger().info(" Camera image available - running one-time Octo inference")
             self.run_inference()
+            self.inference_completed = True
             # Cancel the timer since we only need to run once
             self.inference_timer.cancel()
             self.get_logger().info("✅ One-time inference completed - timer disabled")
@@ -293,16 +296,6 @@ class OctoBridgeNode(Node):
             
             inference_time = time.time() - start_time
             
-            # DEBUG: Save and optionally display the image
-            if self.debug_viz:
-                debug_image_path = f'/tmp/debug_octo_input_{int(time.time())}.jpg'
-                import shutil
-                shutil.copy2(temp_image_path, debug_image_path)
-                self.get_logger().info(f"🔍 Debug: Saved model input to {debug_image_path}")
-                
-                # Optional: Display image in a window (requires GUI)
-                self.show_debug_image(current_image, f"Octo Model Input - {self.current_prompt}")
-            
             # Clean up temporary image
             os.unlink(temp_image_path)
             
@@ -343,38 +336,6 @@ class OctoBridgeNode(Node):
                 self.get_logger().info(f"📦 Stored action sequence: {self.sequence_length} timesteps")
             else:
                 self.get_logger().warn("No valid target poses in Octo result")
-
-    def neutralize_pose_position(self, pose_data):
-        """
-        Apply inverse transformation to neutralize the pose orientation effects on position
-        Returns the neutral position where the gripper center would be with zero orientation
-        """
-        # Extract position and orientation
-        pos = np.array([pose_data.get('x', 0.0), pose_data.get('y', 0.0), pose_data.get('z', 0.0)])
-        roll = pose_data.get('roll', 0.0)
-        pitch = pose_data.get('pitch', 0.0)
-        yaw = pose_data.get('yaw', 0.0)
-        
-        # Get rotation matrix
-        R = rpy_to_rotmat(roll, pitch, yaw)
-        
-        # Apply inverse transformation to get neutral position
-        R_inv = R.T  # Inverse of rotation matrix is its transpose
-        
-        # Apply inverse rotation to position to get neutral coordinates
-        neutral_pos = R_inv @ pos
-        
-        return {
-            'x': float(neutral_pos[0]),
-            'y': float(neutral_pos[1]),
-            'z': float(neutral_pos[2]),
-            'original_x': float(pos[0]),
-            'original_y': float(pos[1]),
-            'original_z': float(pos[2]),
-            'original_roll': roll,
-            'original_pitch': pitch,
-            'original_yaw': yaw
-        }
 
     def execute_next_action(self):
         """Execute the next action in the current sequence"""

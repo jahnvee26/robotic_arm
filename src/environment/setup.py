@@ -26,6 +26,7 @@ setup(
             'vla_node = environment.vla_node:main',
             'image_viewer = environment.image_viewer:main',
             'test_trajectory = environment.test_trajectory:main',
+            'follow_target_with_ik = environment.follow_target_with_ik_ros:main',
         ],
     },
 )
